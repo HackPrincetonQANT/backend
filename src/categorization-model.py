@@ -138,7 +138,7 @@ async def main():
     Expected output: Category classification and database insertion confirmation
     """
     # Load JSON data
-    json_path = os.path.join(os.path.dirname(__file__), 'data', 'simplify_mock_amazon.json')
+    json_path = os.path.join(os.path.dirname(__file__), 'data', 'sample_knot.json')
 
     with open(json_path, 'r') as f:
         data = json.load(f)
