@@ -80,7 +80,23 @@
 ┌─────────────────────────────────────────────────────────────┐
 │              FLASK: POST /api/photon/reply                   │
 │  • Updates database with user label                         │
+│  • IF user_label == "WANT":                                 │
+│      → Calls Alternatives Finder (MCP)                      │
 │  • Calls Prediction Engine                                  │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Alternatives Module (alternatives.py) - NEW!               │
+│  • Calls Dedalus MCP → Location/Pricing API                │
+│  • Finds: cheaper merchants nearby in same category         │
+│  • Returns: {merchant, distance, price, savings}            │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  FLASK: Triggers Photon notification (Alternative Nudge)    │
+│  "Try Cafe Luna 0.3mi away for $3.50 = save $91/year!"     │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
@@ -93,8 +109,8 @@
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  FLASK: Triggers Photon notification                         │
-│  "You buy coffee weekly. Skip today = save $273/year."      │
+│  FLASK: Triggers Photon notification (Prediction Nudge)     │
+│  "You buy coffee weekly. Skip next one = save $273/year."  │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -150,7 +166,7 @@
       Skip notification (essential purchase)
 ```
 
-### Flow 2: User Feedback Loop
+### Flow 2: User Feedback Loop (with Cheaper Alternatives)
 ```
 1. User receives iMessage notification
    ↓
@@ -160,24 +176,39 @@
    {
      "user_id": "u_demo",
      "transaction_id": "t_12345",
-     "message": "NEED"
+     "message": "WANT"
    }
    ↓
 4. Backend extracts label, calls database.insert_user_reply()
    ↓
-5. Backend calls prediction.generate_prediction(user_id, transaction_id)
+5. IF user_label == "WANT":
+      Backend calls alternatives.find_cheaper_alternative()
    ↓
-6. Prediction module:
-   a. Fetches user's transaction history from database
-   b. Calls Dedalus MCP → DigitalOcean AI model
-   c. Prompt: "User buys coffee 3x/week at $5.25. Predict next purchase and annual savings."
-   d. Gets response: {next_eta: "2 days", yearly_savings: "$273"}
+6. Alternatives module:
+   a. Fetches transaction details (merchant, category, amount, location)
+   b. Calls Dedalus MCP with location/pricing tool
+   c. MCP searches for nearby merchants in same category with lower prices
+   d. Returns: {merchant: "Cafe Luna", distance: "0.3mi", price: 3.50, savings: 91.00}
    ↓
-7. Store prediction in database
+7. Store alternative suggestion in database (optional)
    ↓
-8. Send preemptive nudge:
-   photon.send_message(user_id, "You typically buy coffee on Friday.
-                       Skip this one = $273/year saved!")
+8. Send immediate alternative nudge:
+   photon.send_message(user_id, "Next time, try Cafe Luna (0.3mi away) for $3.50.
+                       Switch once/week = save $91/year!")
+   ↓
+9. Backend calls prediction.generate_prediction(user_id, transaction_id)
+   ↓
+10. Prediction module:
+    a. Fetches user's transaction history from database
+    b. Calls Dedalus MCP → DigitalOcean AI model
+    c. Prompt: "User buys coffee 3x/week at $5.25. Predict next purchase and annual savings."
+    d. Gets response: {next_eta: "2 days", yearly_savings: "$273"}
+   ↓
+11. Store prediction in database
+   ↓
+12. Send preemptive nudge:
+    photon.send_message(user_id, "You typically buy coffee on Friday.
+                        Skip this one = $273/year saved!")
 ```
 
 ### Flow 3: Frontend Dashboard
@@ -286,7 +317,44 @@ def classify_transaction(
     """
 ```
 
-### 4. Prediction Module (src/prediction.py)
+### 4. Alternatives Finder Module (src/alternatives.py) - NEW!
+**Responsibilities:**
+- Find cheaper alternative merchants in the same category
+- Use Dedalus MCP with location/pricing search tools
+- Calculate potential savings from switching
+- Return actionable recommendations with distance
+
+**Public Interface:**
+```python
+def find_cheaper_alternative(
+    transaction_id: str,
+    user_id: str,
+    merchant: str,
+    category: str,
+    amount: float,
+    user_location: dict = None  # From Knot or user profile
+) -> dict:
+    """
+    Returns:
+    {
+        "alternative_merchant": "Cafe Luna",
+        "distance_miles": 0.3,
+        "price": 3.50,
+        "yearly_savings": 91.00,  # Based on user's purchase frequency
+        "found": True
+    }
+
+    Returns {"found": False} if no cheaper alternative exists.
+    """
+```
+
+**MCP Integration:**
+- Uses location search API (Google Places, Yelp, or custom)
+- Searches within 1-2 mile radius
+- Filters by category match
+- Compares pricing (may need pricing data source)
+
+### 5. Prediction Module (src/prediction.py)
 **Responsibilities:**
 - Fetch user transaction history
 - Call Dedalus MCP → DigitalOcean AI model
@@ -307,7 +375,7 @@ def generate_prediction(user_id: str, transaction_id: str) -> dict:
     """
 ```
 
-### 5. Photon Module (src/photon.py)
+### 6. Photon Module (src/photon.py)
 **Responsibilities:**
 - Send iMessages via Photon API
 - Handle Photon webhook verification
@@ -373,6 +441,24 @@ def parse_reply(webhook_data: dict) -> dict:
     "next_eta": str,              # "2 days", "1 week"
     "yearly_savings": float,      # 273.00 (dollars)
     "probability": float,         # 0.0 - 1.0
+    "created_at": str             # Auto-generated
+}
+```
+
+### Alternative Suggestion (Alternatives Module → Photon) - NEW!
+```python
+{
+    "transaction_id": str,        # Links to original transaction
+    "user_id": str,               # "u_demo"
+    "original_merchant": str,     # "Starbucks"
+    "original_price": float,      # 5.25
+    "alternative_merchant": str,  # "Cafe Luna"
+    "alternative_price": float,   # 3.50
+    "distance_miles": float,      # 0.3
+    "category": str,              # "Coffee"
+    "yearly_savings": float,      # 91.00 (based on user's frequency)
+    "found": bool,                # True if alternative found
+    "search_radius_miles": float, # 1.0 (search radius used)
     "created_at": str             # Auto-generated
 }
 ```
@@ -626,7 +712,96 @@ def generate_prediction(user_id: str, transaction_id: str) -> dict:
 
 ---
 
-### 6. Frontend → Flask Backend
+### 7. Flask Backend → Alternatives Finder (MCP) - NEW!
+
+**Function Call:** `alternatives.find_cheaper_alternative(...)`
+
+**Request to Dedalus MCP:**
+```python
+# Dedalus MCP server call with location/search tools
+{
+  "tool": "location_search",
+  "prompt": """
+    Find cheaper alternatives to this purchase:
+    - Original: Starbucks, $5.25, Category: Coffee
+    - User location: [lat, lng] or zip code
+    - Search radius: 1-2 miles
+
+    Requirements:
+    1. Find coffee shops within radius
+    2. Filter by price < $5.25
+    3. Return closest/cheapest options
+
+    Return JSON:
+    {
+      "alternatives": [
+        {
+          "merchant": "name",
+          "price": 0.00,
+          "distance_miles": 0.0,
+          "address": "street address"
+        }
+      ]
+    }
+  """,
+  "tools": ["google_places", "yelp_search"],  # MCP tools available
+  "location": {"lat": 40.7128, "lng": -74.0060}
+}
+```
+
+**Response from MCP:**
+```json
+{
+  "alternatives": [
+    {
+      "merchant": "Cafe Luna",
+      "price": 3.50,
+      "distance_miles": 0.3,
+      "address": "123 Main St"
+    },
+    {
+      "merchant": "Local Brew",
+      "price": 4.00,
+      "distance_miles": 0.5,
+      "address": "456 Oak Ave"
+    }
+  ],
+  "found": true
+}
+```
+
+**Backend Processing:**
+```python
+# Pick best alternative (closest + cheapest)
+best = alternatives[0]  # "Cafe Luna"
+
+# Calculate yearly savings
+user_frequency = get_category_frequency(user_id, "Coffee")  # e.g., 52 times/year
+savings = (5.25 - 3.50) * user_frequency  # = $91/year
+
+return {
+    "alternative_merchant": "Cafe Luna",
+    "distance_miles": 0.3,
+    "price": 3.50,
+    "yearly_savings": 91.00,
+    "found": True
+}
+```
+
+**MCP Tools Needed:**
+- **Option 1:** Google Places API MCP server (search nearby, get pricing if available)
+- **Option 2:** Yelp API MCP server (better for pricing data)
+- **Option 3:** Custom search tool combining multiple sources
+- **Fallback:** If no pricing data, use generic message: "Try local coffee shops nearby"
+
+**Location Data Source:**
+- Ideally from Knot transaction (if it includes GPS/location)
+- Or from user profile (home/work address)
+- Or ask user to set default location
+
+---
+
+### 8. Frontend → Flask Backend
 
 **Endpoint:** `GET /user/<user_id>/summary`
 
@@ -692,20 +867,29 @@ GET /user/u_demo/summary?days=30
    - Test with mock transactions
    - **Deliverable:** Function that takes (merchant, amount) and returns classification
 
-3. **Prediction Module** (src/prediction.py)
+3. **Alternatives Finder Module** (src/alternatives.py) - **NEW FEATURE**
+   - Create Dedalus MCP client with location/pricing tools
+   - Implement `find_cheaper_alternative()` function
+   - Integrate with Google Places API, Yelp API, or similar
+   - Calculate savings based on user purchase frequency
+   - **Deliverable:** Function that finds nearby cheaper merchants
+   - **Owner:** [Team member name - assign this]
+
+4. **Prediction Module** (src/prediction.py)
    - Create Dedalus MCP client for predictions
    - Implement `generate_prediction()` function
    - Call DigitalOcean AI or use function calling
    - **Deliverable:** Function that analyzes history and predicts next purchase
 
-4. **Photon Integration** (src/photon.py)
+5. **Photon Integration** (src/photon.py)
    - Implement `send_message()` function
    - Implement webhook handler at `POST /api/photon/reply`
    - Parse user replies ("NEED" vs "WANT")
    - **Deliverable:** Working iMessage send/receive
 
-5. **Main Route Updates** (src/main.py)
+6. **Main Route Updates** (src/main.py)
    - Wire classification into `/api/knot/webhooks`
+   - Wire alternatives finder into `/api/photon/reply` (only for "WANT" responses)
    - Implement `GET /user/<user_id>/summary`
    - Add error handling and logging
 
@@ -911,13 +1095,18 @@ curl -X POST http://localhost:8000/test/classify \
 - ✅ Classification and Prediction both use Dedalus MCP
 - ✅ Prediction engine may use DigitalOcean AI or function calling (TBD)
 - ✅ Photon handles all iMessage communication
+- ✅ **NEW FEATURE:** Alternatives Finder - finds cheaper nearby merchants using MCP
+- ✅ Alternatives trigger on "WANT" user responses only
 - ⏳ Search term preparation logic (TBD - may not be needed if we just use categories)
 
 **Questions to Resolve:**
 - [ ] What MCP server/tool for classification? (Custom vs existing)
 - [ ] DigitalOcean AI model specifics for prediction?
 - [ ] Photon webhook format and authentication?
-- [ ] Do we need search terms, or just categories?
+- [ ] **Alternatives MCP tool:** Google Places, Yelp, or custom search API?
+- [ ] **Location source:** From Knot transaction, user profile, or manual input?
+- [ ] **Pricing data:** How to get accurate pricing for alternatives?
+- [ ] Do we need to store alternatives in database or just send via Photon?
 
 ---
 
