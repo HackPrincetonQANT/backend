@@ -81,6 +81,7 @@ Return ONLY a valid JSON array with one object per product:
 def insert_to_snowflake_batch(all_results, merchant_name):
     """
     Insert all categorized products to Snowflake test table using batch insert.
+    Populates item_text for ML (embeddings generated later via Snowflake Cortex).
 
     Expected input: List of categorized product results
     Expected output: Number of successfully inserted records
@@ -90,6 +91,12 @@ def insert_to_snowflake_batch(all_results, merchant_name):
     # Prepare all parameter sets for batch insert
     params_list = []
     for result in all_results:
+        # Create normalized item_text for ML: "merchant · category · item_name"
+        item_text = f"{merchant_name} · {result['category']}"
+        if result.get('subcategory'):
+            item_text += f" · {result.get('subcategory')}"
+        item_text += f" · {result['item']}"
+
         params_list.append({
             'item_id': str(uuid.uuid4()),
             'purchase_id': f"amzn_{result['transaction_id']}",
@@ -97,6 +104,7 @@ def insert_to_snowflake_batch(all_results, merchant_name):
             'merchant': merchant_name,
             'ts': result['purchased_at'],
             'item_name': result['item'],
+            'item_text': item_text,
             'category': result['category'],
             'subcategory': result.get('subcategory'),
             'price': result['price'],
@@ -109,12 +117,12 @@ def insert_to_snowflake_batch(all_results, merchant_name):
     sql = """
     INSERT INTO purchase_items_test (
         item_id, purchase_id, user_id, merchant, ts,
-        item_name, category, subcategory, price, qty,
+        item_name, item_text, category, subcategory, price, qty,
         detected_needwant, reason, confidence, status
     ) VALUES (
         %(item_id)s, %(purchase_id)s, %(user_id)s, %(merchant)s,
         TO_TIMESTAMP_TZ(%(ts)s),
-        %(item_name)s, %(category)s, %(subcategory)s, %(price)s, %(qty)s,
+        %(item_name)s, %(item_text)s, %(category)s, %(subcategory)s, %(price)s, %(qty)s,
         NULL, %(reason)s, %(confidence)s, 'active'
     )
     """
