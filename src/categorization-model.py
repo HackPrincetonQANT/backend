@@ -12,115 +12,119 @@ load_dotenv(env_path)
 
 # Add parent directory to path for database imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'database', 'api'))
-from db import execute, fetch_all
+from db import execute_many
 
-async def categorize_product(runner, product_name):
+async def categorize_products_batch(runner, products_data):
     """
-    Categorize a single product using Dedalus AI with structured JSON output.
-    AI is free to suggest any category without constraints.
+    Categorize all products in a single batch call to Dedalus AI.
+    This is much faster and more cost-effective than individual calls.
 
-    Expected input: Product name string
-    Expected output: Dict with category, subcategory, confidence, reason fields
+    Expected input: List of dicts with 'name' and 'price' keys
+    Expected output: List of categorization results
     """
-    prompt = f"""You are a product taxonomy classifier. Categorize this product:
+    # Build the batch prompt with all products
+    product_list = "\n".join([
+        f"{i+1}. {p['name']} (${p['price']:.2f})"
+        for i, p in enumerate(products_data)
+    ])
 
-Product: {product_name}
+    prompt = f"""You are a product taxonomy classifier. Categorize ALL these products in one response.
+
+Products to categorize:
+{product_list}
 
 Rules:
-- Suggest the most appropriate category (e.g., Electronics, Groceries, Pet Supplies, etc.)
-- Optionally provide a subcategory for more specificity
+- Suggest the most appropriate category for each (e.g., Electronics, Groceries, Pet Supplies, etc.)
+- Use CONSISTENT category names across similar products
+- Optionally provide subcategories for specificity
 - If confidence < 0.6, set ask_user=true
 - Keep category names concise and standard (no brand names)
 
-Return ONLY valid JSON:
-{{
-  "category": "<main category>",
-  "subcategory": "<optional subcategory or null>",
-  "confidence": <float 0..1>,
-  "reason": "<=12 words explaining why",
-  "ask_user": <true|false>
-}}"""
+Return ONLY a valid JSON array with one object per product:
+[
+  {{
+    "item_number": 1,
+    "category": "<main category>",
+    "subcategory": "<optional subcategory or null>",
+    "confidence": <float 0..1>,
+    "reason": "<=12 words explaining why",
+    "ask_user": <true|false>
+  }},
+  ...
+]"""
 
     response = await runner.run(
         input=prompt,
         model="openai/gpt-5-mini"
     )
 
-    # Parse JSON response
+    # Parse JSON array response
     try:
-        result = json.loads(response.final_output)
-        # Ensure subcategory is present
-        if 'subcategory' not in result:
-            result['subcategory'] = None
-        return result
-    except json.JSONDecodeError:
-        # Fallback if model doesn't return valid JSON
-        return {
-            "category": "Miscellaneous",
-            "subcategory": None,
-            "confidence": 0.0,
-            "reason": "Failed to parse response",
-            "ask_user": True
-        }
+        results = json.loads(response.final_output)
+        if not isinstance(results, list):
+            raise ValueError("Expected JSON array")
+        return results
+    except (json.JSONDecodeError, ValueError) as e:
+        # Fallback: create default categorizations
+        return [
+            {
+                "item_number": i + 1,
+                "category": "Miscellaneous",
+                "subcategory": None,
+                "confidence": 0.0,
+                "reason": f"Failed to parse batch response: {str(e)}",
+                "ask_user": True
+            }
+            for i in range(len(products_data))
+        ]
 
-def insert_to_snowflake(all_results, merchant_name):
+def insert_to_snowflake_batch(all_results, merchant_name):
     """
-    Insert categorized products into Snowflake purchase_items table.
+    Insert all categorized products to Snowflake test table using batch insert.
 
     Expected input: List of categorized product results
     Expected output: Number of successfully inserted records
     """
-    # Use test user_id for now
     user_id = "test_user_001"
 
-    inserted_count = 0
-
+    # Prepare all parameter sets for batch insert
+    params_list = []
     for result in all_results:
-        try:
-            # Generate unique IDs
-            item_id = str(uuid.uuid4())
-            purchase_id = f"amzn_{result['transaction_id']}"
+        params_list.append({
+            'item_id': str(uuid.uuid4()),
+            'purchase_id': f"amzn_{result['transaction_id']}",
+            'user_id': user_id,
+            'merchant': merchant_name,
+            'ts': result['purchased_at'],
+            'item_name': result['item'],
+            'category': result['category'],
+            'subcategory': result.get('subcategory'),
+            'price': result['price'],
+            'qty': result['quantity'],
+            'reason': result['reason'],
+            'confidence': result['confidence']
+        })
 
-            # Prepare SQL for purchase_items table
-            sql = """
-            INSERT INTO purchase_items (
-                item_id, purchase_id, user_id, merchant, ts,
-                item_name, category, subcategory, price, qty,
-                detected_needwant, reason, confidence, status
-            ) VALUES (
-                %(item_id)s, %(purchase_id)s, %(user_id)s, %(merchant)s,
-                TO_TIMESTAMP_TZ(%(ts)s),
-                %(item_name)s, %(category)s, %(subcategory)s, %(price)s, %(qty)s,
-                NULL, %(reason)s, %(confidence)s, 'active'
-            )
-            """
+    # Single batch insert for all records
+    sql = """
+    INSERT INTO purchase_items_test (
+        item_id, purchase_id, user_id, merchant, ts,
+        item_name, category, subcategory, price, qty,
+        detected_needwant, reason, confidence, status
+    ) VALUES (
+        %(item_id)s, %(purchase_id)s, %(user_id)s, %(merchant)s,
+        TO_TIMESTAMP_TZ(%(ts)s),
+        %(item_name)s, %(category)s, %(subcategory)s, %(price)s, %(qty)s,
+        NULL, %(reason)s, %(confidence)s, 'active'
+    )
+    """
 
-            params = {
-                'item_id': item_id,
-                'purchase_id': purchase_id,
-                'user_id': user_id,
-                'merchant': merchant_name,
-                'ts': result['purchased_at'],
-                'item_name': result['item'],
-                'category': result['category'],
-                'subcategory': result.get('subcategory'),
-                'price': result['price'],
-                'qty': result['quantity'],
-                'reason': result['reason'],
-                'confidence': result['confidence']
-            }
-
-            execute(sql, params)
-            inserted_count += 1
-
-        except Exception as e:
-            print(f"  ⚠️  Failed to insert {result['item']}: {str(e)}")
-
-    return inserted_count
+    return execute_many(sql, params_list)
 
 async def main():
     """
-    Load Amazon mock data, categorize products with Dedalus AI, and insert to Snowflake.
+    Load Amazon mock data, categorize products with Dedalus AI batch call,
+    and insert to Snowflake test table.
 
     Expected input: JSON file with Amazon transactions containing products
     Expected output: Category classification and database insertion confirmation
@@ -137,50 +141,45 @@ async def main():
     client = AsyncDedalus()
     runner = DedalusRunner(client)
 
-    # Track results
-    all_results = []
-    total_products = sum(len(transaction['products']) for transaction in data['transactions'])
+    # Collect all products from all transactions
+    products_to_categorize = []
+    product_metadata = []
 
-    print(f"🔄 Categorizing {total_products} products from {merchant_name}...")
-
-    # Loop through all transactions and products
-    processed = 0
     for transaction in data['transactions']:
-        transaction_id = transaction['id']
-        transaction_datetime = transaction['datetime']
-
         for product in transaction['products']:
-            product_name = product['name']
-            product_price = float(product['price']['total'])
-            product_quantity = product['quantity']
-
-            # Categorize product (quietly)
-            result = await categorize_product(runner, product_name)
-
-            # Store result with all fields needed for Snowflake
-            all_results.append({
-                "item": product_name,
-                "category": result['category'],
-                "subcategory": result.get('subcategory'),
-                "price": product_price,
-                "quantity": product_quantity,
-                "purchased_at": transaction_datetime,
-                "confidence": result['confidence'],
-                "reason": result['reason'],
-                "ask_user": result['ask_user'],
-                "transaction_id": transaction_id
+            products_to_categorize.append({
+                'name': product['name'],
+                'price': float(product['price']['total'])
+            })
+            product_metadata.append({
+                'transaction_id': transaction['id'],
+                'transaction_datetime': transaction['datetime'],
+                'name': product['name'],
+                'price': float(product['price']['total']),
+                'quantity': product['quantity']
             })
 
-            processed += 1
-            print(f"  [{processed}/{total_products}] {product_name} → {result['category']}")
+    # Single batch categorization call
+    categorization_results = await categorize_products_batch(runner, products_to_categorize)
 
+    # Merge categorization results with product metadata
+    all_results = []
+    for i, cat_result in enumerate(categorization_results):
+        metadata = product_metadata[i]
+        all_results.append({
+            "item": metadata['name'],
+            "category": cat_result['category'],
+            "subcategory": cat_result.get('subcategory'),
+            "price": metadata['price'],
+            "quantity": metadata['quantity'],
+            "purchased_at": metadata['transaction_datetime'],
+            "confidence": cat_result['confidence'],
+            "reason": cat_result['reason'],
+            "ask_user": cat_result['ask_user'],
+            "transaction_id": metadata['transaction_id']
+        })
 
-    # Print summary
-    print("\n" + "=" * 80)
-    print("CATEGORIZATION SUMMARY")
-    print("=" * 80)
-
-    # Aggregate by category
+    # Calculate summary statistics
     category_data = {}
     for result in all_results:
         category = result['category']
@@ -189,55 +188,33 @@ async def main():
         category_data[category]["total_spend"] += result['price']
         category_data[category]["count"] += 1
 
-    for category in sorted(category_data.keys()):
-        data = category_data[category]
-        print(f"  {category}: ${data['total_spend']:.2f} ({data['count']} items)")
-
-    # Flag low confidence items
-    low_confidence = [r for r in all_results if r['ask_user']]
-    if low_confidence:
-        print(f"\n⚠️  {len(low_confidence)} product(s) need manual review")
-
-    # Insert to Snowflake
-    print("\n" + "=" * 80)
-    print("SNOWFLAKE DATABASE UPDATE")
-    print("=" * 80)
-
+    # Insert to Snowflake test table
     try:
-        print("📤 Inserting categorized products to Snowflake...")
-        inserted_count = insert_to_snowflake(all_results, merchant_name)
-        print(f"✅ Successfully inserted {inserted_count}/{len(all_results)} products")
+        inserted_count = insert_to_snowflake_batch(all_results, merchant_name)
 
-        # Verify insertion
-        print("\n🔍 Verifying database update...")
-        verification_sql = """
-        SELECT category, COUNT(*) as count, SUM(price) as total_spend
-        FROM purchase_items
-        WHERE merchant = %(merchant)s
-        GROUP BY category
-        ORDER BY total_spend DESC
-        """
-        db_results = fetch_all(verification_sql, {'merchant': merchant_name})
+        # Output final summary
+        print(f"✅ Categorized {len(all_results)} products from {merchant_name}")
+        print(f"✅ Inserted {inserted_count} records to purchase_items_test")
+        print("\nCategory Summary:")
+        for category in sorted(category_data.keys()):
+            data_cat = category_data[category]
+            print(f"  • {category}: ${data_cat['total_spend']:.2f} ({data_cat['count']} items)")
 
-        if db_results:
-            print("✅ Database verification successful:")
-            for row in db_results:
-                print(f"  {row['CATEGORY']}: ${row['TOTAL_SPEND']:.2f} ({row['COUNT']} items)")
-        else:
-            print("⚠️  No results found in database (may need different query)")
+        # Flag low confidence items
+        low_confidence = [r for r in all_results if r['ask_user']]
+        if low_confidence:
+            print(f"\n⚠️  {len(low_confidence)} product(s) flagged for manual review")
 
     except Exception as e:
         print(f"❌ Database operation failed: {str(e)}")
-        print("💾 Results saved to JSON as backup")
 
         # Save to JSON file as backup
         output_data = {"all_results": all_results, "category_aggregation": category_data}
         output_path = os.path.join(os.path.dirname(__file__), 'data', 'categorized_products.json')
         with open(output_path, 'w') as f:
             json.dump(output_data, f, indent=2)
-        print(f"   File: {output_path}")
+        print(f"💾 Results saved to: {output_path}")
 
-    print("\n" + "=" * 80)
     return all_results
 
 if __name__ == "__main__":

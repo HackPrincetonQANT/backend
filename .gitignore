@@ -6,3 +6,5 @@
 src/.env
 .DS_Store
 src/.DS_Store
+# Temporary files
+tmp/
