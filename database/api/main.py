@@ -3,7 +3,7 @@
 from typing import List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import queries as Q
 from .db import fetch_all, execute
@@ -380,4 +380,85 @@ def api_weekly_alternatives_history(
         return []
 
     return reports
+
+
+@app.get("/api/user/{user_id}/weekly_alternatives/stream")
+async def stream_weekly_alternatives(
+    user_id: str,
+    week: str = Query(None, description="ISO week start date (YYYY-MM-DD). If not provided, uses last week."),
+):
+    """
+    Stream weekly alternative suggestions with real-time progress (Server-Sent Events).
+
+    This endpoint provides live updates as the AI analyzes purchases and discovers
+    cheaper alternatives. Perfect for showing progress in the UI.
+
+    Query Parameters:
+        - week: Optional ISO week start date (YYYY-MM-DD)
+          If not provided, uses last week
+
+    Returns:
+        Server-Sent Events (text/event-stream) with progress updates:
+        - start: Analysis beginning
+        - items_loaded: Purchases fetched
+        - analyzing: AI processing
+        - found: Alternative discovered
+        - complete: Analysis finished
+        - error: Error occurred
+
+    Example frontend usage:
+        ```javascript
+        const eventSource = new EventSource('/api/user/test_user_001/weekly_alternatives/stream');
+        eventSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            console.log(data.event, data);
+        };
+        ```
+
+    Performance: Real-time streaming (5-10 seconds total)
+    """
+    import importlib.util
+    import os
+    import json
+
+    # Dynamically load streaming module
+    stream_path = os.path.join(os.path.dirname(__file__), '..', '..', 'src', 'services', 'weekly_suggester_stream.py')
+    spec = importlib.util.spec_from_file_location("weekly_suggester_stream", stream_path)
+    stream_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stream_module)
+
+    # Determine week to process
+    if not week:
+        from datetime import datetime, timedelta
+        # Default to last week
+        today = datetime.now()
+        days_since_monday = today.weekday()
+        last_monday = today - timedelta(days=days_since_monday + 7)
+        week = last_monday.strftime('%Y-%m-%d')
+
+    async def event_generator():
+        """Generate SSE events from streaming suggester"""
+        try:
+            async for event_data in stream_module.generate_weekly_suggestions_stream(user_id, week):
+                # Format as SSE: data: {json}\n\n
+                yield f"data: {json.dumps(event_data)}\n\n"
+
+        except Exception as e:
+            # Send error event
+            error_event = {
+                "event": "error",
+                "message": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
