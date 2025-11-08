@@ -331,7 +331,38 @@ ORDER BY total_spend DESC;
 3. **Verify results**: Check data in `purchase_items_test`
 4. **Deploy to production**: Change table name when ready
 
+## Important Notes
+
+### ⚠️ Database Insert Behavior
+
+**The script currently writes to a TEST TABLE, not production:**
+
+- ✅ **Current behavior**: Inserts into `purchase_items_test` (line 110 in `src/categorization-model.py`)
+- 🔴 **Production table**: `purchase_items` (defined in `database/snowflake/01_schema_tables.sql:63`)
+- **Status**: Test table does NOT exist yet - must be created first
+
+**To create test table:**
+```sql
+-- Run this in Snowflake first:
+USE DATABASE SNOWFLAKE_LEARNING_DB;
+USE SCHEMA BALANCEIQ_CORE;
+-- Then execute database/create_test_table.sql
+```
+
+**To use production table instead:**
+```python
+# Edit src/categorization-model.py line 110:
+# Change from:
+INSERT INTO purchase_items_test (
+
+# To:
+INSERT INTO purchase_items (
+```
+
+**Recommendation**: Keep using test table until categorization quality is verified, then switch to production.
+
 ## Commits
 
 - `507bfa8`: Add batch insert helper and test table schema
 - `01b2492`: Optimize categorization with smart batch processing
+- `356f037`: Restore Snowflake schema files
