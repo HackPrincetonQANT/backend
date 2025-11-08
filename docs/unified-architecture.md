@@ -13,11 +13,14 @@ This document describes the unified data architecture that serves both **AI-powe
 └────────┬────────┘
          │
          ▼
-┌──────────────────────────┐
-│  Categorization Script   │
-│  (Dedalus AI - Batch)    │
-│  src/categorization-model.py │
-└────────┬─────────────────┘
+┌──────────────────────────────────────┐
+│  Categorization Script               │
+│  (Dedalus AI - Batch)                │
+│  src/categorization-model.py         │
+│  - AI categorization                 │
+│  - Database insertion                │
+│  - Auto-generate embeddings ✨       │
+└────────┬─────────────────────────────┘
          │
          ▼
 ┌──────────────────────────────────────┐
@@ -25,7 +28,7 @@ This document describes the unified data architecture that serves both **AI-powe
 │  (Single Source of Truth)            │
 │  - Item-level detail                 │
 │  - AI categorization                 │
-│  - ML embeddings                     │
+│  - ML embeddings (auto-generated)    │
 └────────┬─────────────────────────────┘
          │
          ├──────────────────┬─────────────────┐
@@ -176,13 +179,21 @@ INSERT INTO purchase_items_test (
 )
 ```
 
-### 4. Embedding Generation
-```sql
--- Run after insert (Snowflake Cortex)
-UPDATE purchase_items
-SET item_embed = SNOWFLAKE.CORTEX.AI_EMBED_768('e5-base-v2', item_text)
-WHERE item_embed IS NULL;
+### 4. Embedding Generation (Automatic!)
+```python
+# ✨ NEW: Embeddings are automatically generated after insertion
+# by categorization-model.py using generate_embeddings_batch()
+
+# Batch generate embeddings for all newly inserted items
+UPDATE purchase_items_test
+SET item_embed = SNOWFLAKE.CORTEX.EMBED_TEXT_768('e5-base-v2', item_text)
+WHERE item_id IN ('item1', 'item2', ...)
+
+# This happens automatically - no manual SQL script needed!
+# See src/categorization-model.py: generate_embeddings_batch()
 ```
+
+**Note**: Manual embedding generation script still available at `database/snowflake/03_generate_embeddings.sql` for backup/recovery purposes.
 
 ## Prediction Model Integration
 
@@ -243,7 +254,7 @@ backend/
 ├── database/
 │   ├── snowflake/
 │   │   ├── 02_purchase_items_schema.sql    # Main schema + views
-│   │   └── 03_generate_embeddings.sql      # Embedding generation
+│   │   └── 03_generate_embeddings.sql      # Embedding generation (backup/optional)
 │   ├── create_test_table.sql               # Test table (same schema)
 │   └── api/
 │       ├── db.py                           # Connection + execute_many()
@@ -251,7 +262,7 @@ backend/
 │       ├── prediction_queries.py           # ML prediction queries
 │       └── semantic.py                     # Semantic search helper
 ├── src/
-│   └── categorization-model.py             # Dedalus AI categorization
+│   └── categorization-model.py             # Dedalus AI categorization + embeddings
 └── docs/
     └── unified-architecture.md             # This file
 ```
@@ -296,10 +307,11 @@ SELECT * FROM purchase_items WHERE user_id = ?
 
 1. ✅ Create tables: Run `database/snowflake/02_purchase_items_schema.sql`
 2. ✅ Create test table: Run `database/create_test_table.sql`
-3. ⏳ Test categorization: `python src/categorization-model.py`
-4. ⏳ Generate embeddings: Run `database/snowflake/03_generate_embeddings.sql`
-5. ⏳ Update prediction model to use new queries
-6. ⏳ Validate insights accuracy
+3. ✅ Test categorization: `python src/categorization-model.py` (auto-generates embeddings!)
+4. ⏳ Update prediction model to use new queries
+5. ⏳ Validate insights accuracy
+
+**Note**: Step 4 (Generate embeddings) is now automatic! The categorization script handles it.
 
 ## Support
 
