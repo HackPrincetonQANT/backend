@@ -51,3 +51,19 @@ def execute(sql: str, params: Dict[str, Any] | None = None) -> None:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql, params or {})
         conn.commit()
+
+
+def execute_many(sql: str, params_list: List[Dict[str, Any]]) -> int:
+    """
+    Execute a SQL statement with multiple parameter sets for batch operations.
+
+    Expected input: SQL statement and list of parameter dictionaries
+    Expected output: Number of rows affected
+    """
+    if not params_list:
+        return 0
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.executemany(sql, params_list)
+        conn.commit()
+        return cur.rowcount
