@@ -2,3 +2,8 @@
 .hack_env
 .vscode
 .scripts/backend/database/api/.env
+.scripts/
+# Ignore environment files in the repo source directories
+src/.env
+.DS_Store
+docs/.DS_Store
