@@ -29,9 +29,17 @@
              │
              ▼
 ┌─────────────────────────────────┐
-│  Update Snowflake DB:           │
+│  Insert to Snowflake DB:        │
 │  • category                     │
-│  • total_spend += price         │
-│  • add to items list            │
-│  • timestamp                    │
+│  • item_name, price, qty        │
+│  • merchant, timestamp          │
+│  • confidence, reason           │
+└────────────┬────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────┐
+│  Auto-Generate Embeddings ✨    │
+│  → Cortex EMBED_TEXT_768        │
+│  → For ML/semantic search       │
+│  → Batch processing             │
 └─────────────────────────────────┘
