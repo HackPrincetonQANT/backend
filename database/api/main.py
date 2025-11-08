@@ -11,6 +11,7 @@ from .models import TransactionInsert, UserReply
 from .semantic import search_similar_items
 from .predictor import predict_next_purchases
 from .do_llm import call_do_llm
+from .suggestions import get_weekly_report, get_recent_reports
 
 app = FastAPI(title="BalanceIQ Core API", version="0.1.0")
 
@@ -273,4 +274,110 @@ def api_coach(
         "predictions": predictions,
         "recent_transactions": summarized_txs,
     }
+
+
+# ----------------------------------------------------------------------
+# Weekly Alternative Suggestions
+# ----------------------------------------------------------------------
+
+
+@app.get("/api/user/{user_id}/weekly_alternatives")
+def api_weekly_alternatives(
+    user_id: str,
+    week: str = Query(None, description="ISO week start date (YYYY-MM-DD). If not provided, returns most recent report."),
+) -> Dict[str, Any]:
+    """
+    Get weekly alternative suggestions for a user.
+
+    Returns cached weekly suggestion reports that show cheaper alternatives
+    for the user's purchases across major retailers.
+
+    Query Parameters:
+        - week: Optional ISO week start date (YYYY-MM-DD)
+          If not provided, returns the most recent report
+
+    Returns:
+        {
+            "user_id": "test_user_001",
+            "week_start": "2024-01-22",
+            "week_end": "2024-01-29",
+            "findings": [
+                {
+                    "item_name": "Ring Video Doorbell 3",
+                    "original_price": 119.99,
+                    "original_merchant": "Amazon",
+                    "alternative_merchant": "Best Buy",
+                    "total_landed_cost": 106.99,
+                    "total_savings": 13.00,
+                    "url": "https://www.bestbuy.com/...",
+                    ...
+                }
+            ],
+            "total_potential_savings": 42.50,
+            "items_analyzed": 5,
+            "items_with_alternatives": 3,
+            "created_at": "2024-01-27T10:30:00Z",
+            "updated_at": "2024-01-27T10:30:00Z"
+        }
+
+    Performance: <800ms (served from cached reports in Snowflake)
+    """
+    if week:
+        # Get specific week's report
+        report = get_weekly_report(user_id, week)
+
+        if not report:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No weekly alternatives report found for user {user_id} and week {week}"
+            )
+
+        return report
+
+    else:
+        # Get most recent report
+        recent_reports = get_recent_reports(user_id, limit=1)
+
+        if not recent_reports:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No weekly alternatives reports found for user {user_id}"
+            )
+
+        return recent_reports[0]
+
+
+@app.get("/api/user/{user_id}/weekly_alternatives/history")
+def api_weekly_alternatives_history(
+    user_id: str,
+    limit: int = Query(4, ge=1, le=12, description="Number of recent reports to return"),
+) -> List[Dict[str, Any]]:
+    """
+    Get recent weekly alternative suggestions history for a user.
+
+    Returns up to `limit` recent reports, ordered by week_start descending.
+    Default is 4 reports (approximately 1 month of history).
+
+    Returns:
+        [
+            {
+                "user_id": "test_user_001",
+                "week_start": "2024-01-22",
+                "week_end": "2024-01-29",
+                "total_potential_savings": 42.50,
+                "items_analyzed": 5,
+                "items_with_alternatives": 3,
+                "findings": [...],
+                ...
+            },
+            ...
+        ]
+    """
+    reports = get_recent_reports(user_id, limit=limit)
+
+    if not reports:
+        # Return empty list instead of 404 for history endpoint
+        return []
+
+    return reports
 
