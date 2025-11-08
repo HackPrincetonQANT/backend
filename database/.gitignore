@@ -1,0 +1,33 @@
+
+# Ignore local virtual environments (common names)
+.venv*/
+venv*/
+*/.venv*/
+*/venv*/
+
+# Ignore the repo's packaged venvs and common patterns
+balanceiq-api/.venv*/
+.venv311/
+
+# Local environment files (keep out of repo)
+.env
+api/.env
+
+# Python caches and compiled files
+__pycache__/
+*/__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Editor / OS files
+.DS_Store
+.vscode/
+.idea/
+*~
+
