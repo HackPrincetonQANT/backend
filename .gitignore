@@ -1,0 +1,9 @@
+.balanceiq-api/
+
+# # Local environment files
+.env
+/api/.env
+
+# Python caches
+__pycache__/
+*/__pycache__/
