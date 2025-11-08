@@ -1,7 +1,8 @@
 # api/main.py
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-
+from fastapi import FastAPI, Query
+from .semantic import search_similar_items
 from .db import fetch_all, execute
 from .models import TransactionInsert, UserReply
 from . import queries as Q  # <— RELATIVE import
@@ -34,3 +35,14 @@ def upsert_transaction(txn: TransactionInsert):
 def upsert_reply(rep: UserReply):
     execute(Q.SQL_MERGE_REPLY, rep.model_dump())
     return {"status": "ok", "id": rep.id}
+
+@app.get("/semantic-search")
+def semantic_search(
+    q: str = Query(..., description="Search text"),
+    user_id: str = Query(...),
+    limit: int = Query(5, ge=1, le=50),
+):
+    """
+    Semantic search over a user's transactions using Snowflake embeddings.
+    """
+    return search_similar_items(q, user_id, limit)

@@ -5,7 +5,16 @@ from typing import Dict, Any, Iterable, List
 from dotenv import load_dotenv
 import snowflake.connector as sfc
 from snowflake.connector import DictCursor
+from pathlib import Path
+from dotenv import load_dotenv
 
+# Try a few likely locations without overwriting already-set env vars
+for p in [
+    Path(__file__).with_name(".env"),          # backend/database/api/.env
+    Path(__file__).parents[2] / ".env",        # backend/.env
+    Path.cwd() / ".env",                       # current working dir .env
+]:
+    load_dotenv(p, override=False)
 # Load env from both places if present
 load_dotenv("api/.env", override=False)
 load_dotenv(".env", override=False)
