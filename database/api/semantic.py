@@ -2,7 +2,7 @@
 
 import math
 import snowflake.connector as sfc
-from .db import get_conn  # reuse your existing connection helper
+from db import get_conn  # reuse your existing connection helper
 
 
 def cosine(a, b):

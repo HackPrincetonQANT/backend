@@ -1,11 +1,10 @@
 # api/main.py
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-from fastapi import FastAPI, Query
-from .semantic import search_similar_items
-from .db import fetch_all, execute
-from .models import TransactionInsert, UserReply
-from . import queries as Q  # <— RELATIVE import
+from semantic import search_similar_items
+from db import fetch_all, execute
+from models import TransactionInsert, UserReply
+import queries as Q  # <— Absolute import
 
 app = FastAPI(title="BalanceIQ Core API", version="0.1.0")
 

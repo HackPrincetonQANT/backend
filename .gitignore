@@ -1,13 +1,37 @@
-.pycache
-.hack_env
-.vscode
-.scripts/
-# Ignore environment files in the repo source directories
-src/.env
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+hack_venv/
+ENV/
+env/
+
+# Environment files (keep .env.example, ignore actual .env)
+.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
-docs/.DS_Store
+Thumbs.db
+
 # Temporary files
 tmp/
-.scripts/backend/database/api/.env
-.venv
-.DS_Store
+*.log
+*.tmp
+
+# Test output
+src/data/categorized_products.json
+
+# Documentation (keep these for reference)
+# TEST_STATUS.md - useful for tracking
+# TESTING_GUIDE.md - useful for new developers
+# DEPLOYMENT_SUCCESS.md - comprehensive documentation

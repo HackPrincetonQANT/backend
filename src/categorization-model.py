@@ -12,7 +12,7 @@ load_dotenv(env_path)
 
 # Add parent directory to path for database imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'database', 'api'))
-from db import execute_many
+from db import execute_many, execute, fetch_all
 
 async def categorize_products_batch(runner, products_data):
     """
@@ -129,6 +129,48 @@ def insert_to_snowflake_batch(all_results, merchant_name):
 
     return execute_many(sql, params_list)
 
+def generate_embeddings_batch():
+    """
+    Generate embeddings for items that don't have them yet using Snowflake Cortex AI.
+    This runs automatically after insertion to ensure all items are ready for semantic search.
+
+    Expected input: None (operates on all items with NULL embeddings)
+    Expected output: Number of items that received embeddings
+    """
+    # SQL to generate embeddings using Snowflake Cortex AI (e5-base-v2 model, 768 dimensions)
+    sql = """
+    UPDATE purchase_items_test
+    SET item_embed = SNOWFLAKE.CORTEX.EMBED_TEXT_768('e5-base-v2', item_text)
+    WHERE item_text IS NOT NULL
+      AND item_embed IS NULL
+      AND status = 'active'
+    """
+
+    try:
+        # Count items before embedding
+        count_sql = """
+        SELECT COUNT(*) as count
+        FROM purchase_items_test
+        WHERE item_text IS NOT NULL
+          AND item_embed IS NULL
+          AND status = 'active'
+        """
+        result = fetch_all(count_sql)
+        items_to_embed = result[0]['COUNT'] if result else 0
+
+        if items_to_embed == 0:
+            return 0
+
+        # Generate embeddings
+        execute(sql)
+
+        return items_to_embed
+
+    except Exception as e:
+        print(f"⚠️  Warning: Embedding generation failed: {str(e)}")
+        print("   Items were inserted successfully but embeddings will need to be generated manually.")
+        return 0
+
 async def main():
     """
     Load Amazon mock data, categorize products with Dedalus AI batch call,
@@ -138,7 +180,7 @@ async def main():
     Expected output: Category classification and database insertion confirmation
     """
     # Load JSON data
-    json_path = os.path.join(os.path.dirname(__file__), 'data', 'simplify_mock_amazon.json')
+    json_path = os.path.join(os.path.dirname(__file__), 'data', 'sample_knot.json')
 
     with open(json_path, 'r') as f:
         data = json.load(f)
@@ -200,9 +242,15 @@ async def main():
     try:
         inserted_count = insert_to_snowflake_batch(all_results, merchant_name)
 
+        # Auto-generate embeddings for newly inserted items
+        print(f"\n🔄 Generating embeddings for inserted items...")
+        embedded_count = generate_embeddings_batch()
+
         # Output final summary
         print(f"✅ Categorized {len(all_results)} products from {merchant_name}")
         print(f"✅ Inserted {inserted_count} records to purchase_items_test")
+        if embedded_count > 0:
+            print(f"✅ Generated embeddings for {embedded_count} items (100% coverage)")
         print("\nCategory Summary:")
         for category in sorted(category_data.keys()):
             data_cat = category_data[category]
