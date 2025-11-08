@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import json
 import os
 import sys
@@ -10,9 +11,14 @@ from dotenv import load_dotenv
 env_path = os.path.join(os.path.dirname(__file__), '..', 'database', 'api', '.env')
 load_dotenv(env_path)
 
-# Add parent directory to path for database imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'database', 'api'))
-from db import execute_many, execute, fetch_all
+# Dynamically load the db module from the database API directory
+db_path = os.path.join(os.path.dirname(__file__), '..', 'database', 'api', 'db.py')
+spec = importlib.util.spec_from_file_location("db", db_path)
+db = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(db)
+execute_many = db.execute_many
+execute = db.execute
+fetch_all = db.fetch_all
 
 async def categorize_products_batch(runner, products_data):
     """
@@ -30,28 +36,28 @@ async def categorize_products_batch(runner, products_data):
 
     prompt = f"""You are a product taxonomy classifier. Categorize ALL these products in one response.
 
-Products to categorize:
-{product_list}
+            Products to categorize:
+            {product_list}
 
-Rules:
-- Suggest the most appropriate category for each (e.g., Electronics, Groceries, Pet Supplies, etc.)
-- Use CONSISTENT category names across similar products
-- Optionally provide subcategories for specificity
-- If confidence < 0.6, set ask_user=true
-- Keep category names concise and standard (no brand names)
+            Rules:
+            - Suggest the most appropriate category for each (e.g., Electronics, Groceries, Pet Supplies, etc.)
+            - Use CONSISTENT category names across similar products
+            - Optionally provide subcategories for specificity
+            - If confidence < 0.6, set ask_user=true
+            - Keep category names concise and standard (no brand names)
 
-Return ONLY a valid JSON array with one object per product:
-[
-  {{
-    "item_number": 1,
-    "category": "<main category>",
-    "subcategory": "<optional subcategory or null>",
-    "confidence": <float 0..1>,
-    "reason": "<=12 words explaining why",
-    "ask_user": <true|false>
-  }},
-  ...
-]"""
+            Return ONLY a valid JSON array with one object per product:
+            [
+            {{
+                "item_number": 1,
+                "category": "<main category>",
+                "subcategory": "<optional subcategory or null>",
+                "confidence": <float 0..1>,
+                "reason": "<=12 words explaining why",
+                "ask_user": <true|false>
+            }},
+            ...
+            ]"""
 
     response = await runner.run(
         input=prompt,

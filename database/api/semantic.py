@@ -1,70 +1,58 @@
-# backend/database/api/semantic.py
+# database/api/semantic.py
 
-import math
-import snowflake.connector as sfc
-from db import get_conn  # reuse your existing connection helper
-
-
-def cosine(a, b):
-    """Compute cosine similarity between two equal-length vectors."""
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
+from typing import List, Dict, Any
+from .db import fetch_all
 
 
-def search_similar_items(query: str, user_id: str, limit: int = 5):
+def search_similar_items(
+    query: str,
+    user_id: str,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
     """
-    Semantic search over TRANSACTIONS for a given user.
+    Simple text-based semantic-ish search.
 
-    1. Embed the query text using Cortex.
-    2. Fetch recent transactions with ITEM_EMBED.
-    3. Compute cosine similarity in Python.
-    4. Return top-k most similar.
+    For now, this does a case-insensitive ILIKE match on ITEM_NAME / MERCHANT
+    in PURCHASE_ITEMS_TEST. This keeps the endpoint working without relying
+    on Snowflake VECTOR features, which have been tricky.
+
+    It returns rows shaped similarly to /api/user/{user_id}/transactions.
     """
-    with get_conn() as conn, conn.cursor(sfc.DictCursor) as cur:
-        # 1) Embed the query using Cortex
-        cur.execute(
-            """
-            SELECT SNOWFLAKE.CORTEX.AI_EMBED_768('e5-base-v2', %s) AS QV
-            """,
-            (query,),
-        )
-        row = cur.fetchone()
-        query_vec = row["QV"]  # Snowflake VECTOR -> Python list
 
-        # 2) Pull candidate rows (e.g. most recent 200 for that user)
-        cur.execute(
-            """
-            SELECT
-                ID,
-                ITEM_TEXT,
-                ITEM_EMBED
-            FROM TRANSACTIONS
-            WHERE USER_ID = %s
-              AND ITEM_EMBED IS NOT NULL
-            ORDER BY OCCURRED_AT DESC
-            LIMIT 200
-            """,
-            (user_id,),
-        )
-        candidates = cur.fetchall()
+    sql = """
+        SELECT
+          ITEM_ID AS ID,
+          COALESCE(ITEM_NAME, MERCHANT) AS ITEM_TEXT,
+          (PRICE * 100)::NUMBER(12,0) AS AMOUNT_CENTS,
+          TS AS OCCURRED_AT,
+          CATEGORY
+        FROM SNOWFLAKE_LEARNING_DB.BALANCEIQ_CORE.PURCHASE_ITEMS_TEST
+        WHERE USER_ID = %s
+          AND (
+            ITEM_NAME ILIKE %s
+            OR MERCHANT ILIKE %s
+            OR CATEGORY ILIKE %s
+          )
+        ORDER BY TS DESC
+        LIMIT %s
+    """
 
-    # 3) Compute similarity in Python
-    scored = []
-    for r in candidates:
-        emb = r["ITEM_EMBED"]
-        sim = cosine(query_vec, emb)
-        scored.append(
+    like = f"%{query}%"
+    params = (user_id, like, like, like, limit)
+    rows = fetch_all(sql, params)
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        cents = r.get("AMOUNT_CENTS")
+        amount = float(cents) / 100.0 if cents is not None else None
+        out.append(
             {
                 "id": r["ID"],
-                "item_text": r["ITEM_TEXT"],
-                "similarity": sim,
+                "item": r["ITEM_TEXT"],
+                "amount": amount,
+                "date": r["OCCURRED_AT"],
+                "category": r["CATEGORY"],
             }
         )
 
-    # 4) Sort by similarity (high -> low) and return top-k
-    scored.sort(key=lambda x: x["similarity"], reverse=True)
-    return scored[:limit]
+    return out
